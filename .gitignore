@@ -1,0 +1,4 @@
+data/
+exports/
+__pycache__/
+*.db
