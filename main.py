@@ -338,14 +338,15 @@ if __name__ == "__main__":
             time.sleep(DELAY)
 
     elif choice == "3":
-        for item in tqdm(all_data, desc="Processing Interesting Market Data"):
-            slug=item["slug"]
-    
-            status = item_status.get(slug)
+        item_lookup = {item["slug"]: item for item in all_data}
+        for slug, status in tqdm(item_status.items(), desc="Processing Interesting Market Data"):
 
-            if status is None:
-                continue
             if status == "cheap":
+                continue
+
+            item = item_lookup.get(slug)
+
+            if not item:
                 continue
 
             process_item(item)
