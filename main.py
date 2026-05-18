@@ -4,6 +4,7 @@ import time
 from tqdm import tqdm
 import pandas as pd
 import statistics
+import math
 
 BASE_URL = "https://api.warframe.market/v2/"
 
@@ -106,85 +107,93 @@ def analyze_orders(item, data):
         clean_sells = remove_outliers(sell_prices)
         clean_buys = remove_outliers(buy_prices)
 
-        sample_sells = clean_sells[:10] if len(clean_sells) > 10 else clean_sells
         sample_buys = clean_buys[-10:] if len(clean_buys) > 10 else clean_buys
 
-        avg_sell = sum(sample_sells) / len(sample_sells) if sample_sells else None
-        avg_buy = sum(sample_buys) / len(sample_buys) if sample_buys else None
 
-        lowest_sell = min(o["platinum"] for o in sells) if sells else None
-        highest_buy = max(o["platinum"] for o in buys) if buys else None
+        #avg_sell
+        if clean_sells:
+            sample_size = min(10, len(clean_sells))
 
-        if avg_sell is not None and avg_buy is not None:
-            mid_point = (avg_sell + avg_buy) / 2
+            avg_sell = (
+                sum(clean_sells[:sample_size]) / sample_size
+            )
         else:
-            mid_point = None
+            avg_sell = None
 
-        if lowest_sell is not None and highest_buy is not None:
-            compression = lowest_sell - highest_buy
-
-            if compression > 0:
-                status = "Buyers underpaying"
-            elif compression < 0:
-                status = "Arbitrage opportunity"
-            else:
-                status = "no gap"
+        #fair_price
+        if len(clean_sells) >= 3:
+            fair_price = statistics.median(clean_sells)
         else:
-            compression = None
+            fair_price = avg_sell
 
-            if sells and not buys:
-                status = "No buyers"
-            elif buys and not sells:
-                status = "No sellers"
-            else:
-                status = "No market"
 
-        sell_count = len(clean_sells)
-        buy_count = len(clean_buys)
+        #avg_buy
+        if clean_buys:
+            sample_size = min(10, len(clean_buys))
+
+            avg_buy = (
+                sum(clean_buys[-sample_size:]) / sample_size
+            )
+        else:
+            avg_buy = None
+
         spread = avg_sell - avg_buy if avg_sell is not None and avg_buy is not None else None
-        spread_percentage = spread/mid_point if spread is not None and mid_point is not None else None
-        volatility = statistics.stdev(clean_sells) if len(clean_sells) > 1 else None
-        relative_volatility = volatility/mid_point if volatility is not None and mid_point is not None else None
 
-        confidence = 100
+        #confidence
+        if fair_price and len(clean_sells) >= 5:
 
-        confidence += min(buy_count, 20) * 1.5
-        confidence += min(sell_count, 20) * 1.0
+            threshold = fair_price * 0.10
 
-        confidence -= spread_percentage * 100 if spread_percentage is not None else 0
-        confidence -= relative_volatility * 50 if relative_volatility is not None else 0
+            close_count = sum(
+                1
+                for price in clean_sells
+                if abs(price - fair_price) <= threshold
+            )
 
-        confidence = round(max(0, min(confidence, 100)))
+            confidence = round(
+                (close_count / len(clean_sells)) * 100
+            )
 
-        liquidity = (buy_count * sell_count) / (spread + 1) if spread is not None else 0
+        else:
+            confidence = 0
 
-        volume = buy_count + sell_count
+        volume = len(clean_sells) + len(clean_buys)
 
-        stability = 1-volatility/mid_point if volatility is not None and mid_point is not None else None
+        #score
+        if (
+            fair_price is not None
+            and confidence is not None
+        ):
 
-        demand = buy_count / (sell_count + 1) if sell_count + 1 > 0 else None
-        
-        execution = liquidity * confidence if liquidity is not None and confidence is not None else None
+            score = (
+                fair_price
+                * math.log(volume + 1)
+                * (confidence / 100)
+            )
 
-        risk = (1 - stability) + (1 / (volume + 1)) if stability is not None and volume is not None else None
+        else:
+            score = 0
+
+
+        if score >= 80:
+            action = "TRADE"
+
+        elif score >= 40:
+            action = "WATCH"
+
+        else:
+            action = "IGNORE"
+
+        if volume < 5:
+            action = "IGNORE"
 
         return {
-            "lowest_sell": lowest_sell,
-            "highest_buy": highest_buy,
             "avg_sell": avg_sell,
-            "avg_buy": avg_buy,
-            "mid_point": mid_point,
-            "confidence": confidence,
-            "compression": compression,
-            "status": status,
-            "liquidity": liquidity,
-            "spread": spread,
-            "spread_percentage": spread_percentage,
+            "fair_price": fair_price,
             "volume": volume,
-            "stability": stability,
-            "demand": demand,
-            "execution": execution,
-            "risk": risk
+            "confidence": confidence,
+            "score": score,
+            "action": action,
         }
 
     result = {
@@ -203,9 +212,9 @@ def analyze_orders(item, data):
 
         result["base"] = analyze_group(base_sells, base_buys)
         result["max_rank"] = analyze_group(max_sells, max_buys)
-        #if the item is an arcane check the rank compression
+        #if the item is an arcane check the rank flippable
         if is_arcane:
-            target_price = result["max_rank"]["avg_buy"] if result["max_rank"]["avg_buy"] is not None else None
+            target_price = result["max_rank"]["fair_price"] if result["max_rank"]["fair_price"] is not None else None
             if target_price is None:
                 return
             cheap_pool = [
@@ -361,39 +370,21 @@ if __name__ == "__main__":
             "slug": slug,
             "name": item.get("name"),
 
-            "base_lowest_sell": item["base"].get("lowest_sell"),
-            "base_highest_buy": item["base"].get("highest_buy"),
             "base_avg_sell": item["base"].get("avg_sell"),
-            "base_avg_buy": item["base"].get("avg_buy"),
-            "base_mid_point": item["base"].get("mid_point"),
-            "base_confidence": item["base"].get("confidence"),
-            "base_compression": item["base"].get("compression"),
-            "base_liquidity": item["base"].get("liquidity"),
-            "base_status": item["base"].get("status"),
-            "base_spread": item["base"].get("spread"),
-            "base_spread_percentage": item["base"].get("spread_percentage"),
+            "base_fair_price": item["base"].get("fair_price"),
             "base_volume": item["base"].get("volume"),
-            "base_stability": item["base"].get("stability"),
-            "base_demand": item["base"].get("demand"),
-            "base_execution": item["base"].get("execution"),
-            "base_risk": item["base"].get("risk"),
+            "base_confidence": item["base"].get("confidence"),
+            "base_score": item["base"].get("score"),
+            "base_action": item["base"].get("action"),
+            
 
-            "max_lowest_sell": item.get("max_rank", {}).get("lowest_sell"),
-            "max_highest_buy": item.get("max_rank", {}).get("highest_buy"),
             "max_avg_sell": item.get("max_rank", {}).get("avg_sell"),
-            "max_avg_buy": item.get("max_rank", {}).get("avg_buy"),
-            "max_mid_point": item.get("max_rank", {}).get("mid_point"),
-            "max_confidence": item.get("max_rank", {}).get("confidence"),
-            "max_compression": item.get("max_rank", {}).get("compression"),
-            "max_liquidity": item.get("max_rank", {}).get("liquidity"),
-            "max_status": item.get("max_rank", {}).get("status"),
-            "max_spread": item.get("max_rank", {}).get("spread"),
-            "max_spread_percentage": item.get("max_rank", {}).get("spread_percentage"),
+            "max_fair_price": item.get("max_rank", {}).get("fair_price"),
             "max_volume": item.get("max_rank", {}).get("volume"),
-            "max_stability": item.get("max_rank", {}).get("stability"),
-            "max_demand": item.get("max_rank", {}).get("demand"),
-            "max_execution": item.get("max_rank", {}).get("execution"),
-            "max_risk": item.get("max_rank", {}).get("risk")
+            "max_confidence": item.get("max_rank", {}).get("confidence"),
+            "max_score": item.get("max_rank", {}).get("score"),
+            "max_action": item.get("max_rank", {}).get("action"),
+            
         })
     df = pd.DataFrame(rows)
     df.to_csv("exports/item_metrics.csv", index=False)
